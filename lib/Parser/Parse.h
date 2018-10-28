@@ -313,7 +313,8 @@ protected:
     Js::ScriptContext* m_scriptContext;
     HashTbl * GetHashTbl() { return this->GetScanner()->GetHashTbl(); }
 
-    __declspec(noreturn) void Error(HRESULT hr);
+    LPCWSTR GetTokenString(tokens token);
+    __declspec(noreturn) void Error(HRESULT hr, LPCWSTR stringOne = _u(""), LPCWSTR stringTwo = _u(""));
 private:
     __declspec(noreturn) void Error(HRESULT hr, ParseNodePtr pnode);
     __declspec(noreturn) void Error(HRESULT hr, charcount_t ichMin, charcount_t ichLim);
@@ -377,6 +378,7 @@ private:
 
     ParseNodeInt * CreateIntNode(int32 lw);
     ParseNodeStr * CreateStrNode(IdentPtr pid);
+    ParseNodeBigInt * CreateBigIntNode(IdentPtr pid);
     ParseNodeName * CreateNameNode(IdentPtr pid);
     ParseNodeName * CreateNameNode(IdentPtr pid, PidRefStack * ref, charcount_t ichMin, charcount_t ichLim);
     ParseNodeSpecialName * CreateSpecialNameNode(IdentPtr pid, PidRefStack * ref, charcount_t ichMin, charcount_t ichLim);
@@ -1128,17 +1130,17 @@ private:
 
     enum FncDeclFlag : ushort
     {
-        fFncNoFlgs                  = 0,
-        fFncDeclaration             = 1 << 0,
-        fFncNoArg                   = 1 << 1,
-        fFncOneArg                  = 1 << 2, //Force exactly one argument.
-        fFncNoName                  = 1 << 3,
-        fFncLambda                  = 1 << 4,
-        fFncMethod                  = 1 << 5,
-        fFncClassMember             = 1 << 6,
-        fFncGenerator               = 1 << 7,
-        fFncAsync                   = 1 << 8,
-        fFncModule                  = 1 << 9,
+        fFncNoFlgs      = 0,
+        fFncDeclaration = 1 << 0,
+        fFncNoArg       = 1 << 1,
+        fFncOneArg      = 1 << 2, //Force exactly one argument.
+        fFncNoName      = 1 << 3,
+        fFncLambda      = 1 << 4,
+        fFncMethod      = 1 << 5,
+        fFncClassMember = 1 << 6,
+        fFncGenerator   = 1 << 7,
+        fFncAsync       = 1 << 8,
+        fFncModule      = 1 << 9,
         fFncClassConstructor        = 1 << 10,
         fFncBaseClassConstructor    = 1 << 11,
     };

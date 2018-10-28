@@ -34,9 +34,9 @@ if ((isTopLevel)) \
     byteCodeGenerator->EndStatement(pnode); \
 }
 
-BOOL MayHaveSideEffectOnNode(ParseNode *pnode, ParseNode *pnodeSE)
+BOOL MayHaveSideEffectOnNode(ParseNode *pnode, ParseNode *pnodeSE, ByteCodeGenerator *byteCodeGenerator)
 {
-    // Try to determine whether pnodeSE may kill the named var represented by pnode.
+    // Try to determine whether pnodeSE (SE = side effect) may kill the named var represented by pnode.
 
     if (pnode->nop == knopComputedName)
     {
@@ -49,54 +49,76 @@ BOOL MayHaveSideEffectOnNode(ParseNode *pnode, ParseNode *pnodeSE)
         return false;
     }
 
-    uint fnop = ParseNode::Grfnop(pnodeSE->nop);
-    if (fnop & fnopLeaf)
-    {
-        // pnodeSE is a leaf and can't kill anything.
-        return false;
-    }
+    ArenaAllocator *alloc = byteCodeGenerator->GetAllocator();
+    SList<ParseNode*> pNodeSEStack(alloc);
 
-    if (fnop & fnopAsg)
-    {
-        // pnodeSE is an assignment (=, ++, +=, etc.)
-        // Trying to examine the LHS of pnodeSE caused small perf regressions,
-        // maybe because of code layout or some other subtle effect.
-        return true;
-    }
+    pNodeSEStack.Push(pnodeSE);
 
-    if (fnop & fnopUni)
+    // A pnodeSE can have children that can cause a side effect on pnode. A stack is used to check
+    // pnodeSE and all potential pnodeSE children that could cause a side effect on pnode. When a
+    // child pnodeSE can cause a side effect on pnode, immediately return true. Otherwise continue
+    // checking children of pnodeSE until none exist
+    while (!pNodeSEStack.Empty())
     {
-        // pnodeSE is a unary op, so recurse to the source (if present - e.g., [] may have no opnd).
-        if (pnodeSE->nop == knopTempRef)
+        ParseNode *currPnodeSE = pNodeSEStack.Pop();
+        uint fnop = ParseNode::Grfnop(currPnodeSE->nop);
+
+        if (fnop & fnopLeaf)
         {
-            return false;
+            // pnodeSE is a leaf and can't kill anything.
+            continue;
         }
-        else
+        else if (fnop & fnopAsg)
         {
-            return pnodeSE->AsParseNodeUni()->pnode1 && MayHaveSideEffectOnNode(pnode, pnodeSE->AsParseNodeUni()->pnode1);
+            // pnodeSE is an assignment (=, ++, +=, etc.)
+            // Trying to examine the LHS of pnodeSE caused small perf regressions,
+            // maybe because of code layout or some other subtle effect.
+            return true;
         }
-    }
-    else if (fnop & fnopBin)
-    {
-        // pnodeSE is a binary (or ternary) op, so recurse to the sources (if present).
-        return MayHaveSideEffectOnNode(pnode, pnodeSE->AsParseNodeBin()->pnode1) ||
-            (pnodeSE->AsParseNodeBin()->pnode2 && MayHaveSideEffectOnNode(pnode, pnodeSE->AsParseNodeBin()->pnode2));
-    }
-    else if (pnodeSE->nop == knopQmark)
-    {
-        ParseNodeTri * pnodeTriSE = pnodeSE->AsParseNodeTri();
-        return MayHaveSideEffectOnNode(pnode, pnodeTriSE->pnode1) ||
-            MayHaveSideEffectOnNode(pnode, pnodeTriSE->pnode2) ||
-            MayHaveSideEffectOnNode(pnode, pnodeTriSE->pnode3);
-    }
-    else if (pnodeSE->nop == knopCall || pnodeSE->nop == knopNew)
-    {
-        return MayHaveSideEffectOnNode(pnode, pnodeSE->AsParseNodeCall()->pnodeTarget) ||
-            (pnodeSE->AsParseNodeCall()->pnodeArgs && MayHaveSideEffectOnNode(pnode, pnodeSE->AsParseNodeCall()->pnodeArgs));
-    }
-    else if (pnodeSE->nop == knopList)
-    {
-        return true;
+        else if (fnop & fnopUni)
+        {
+            // pnodeSE is a unary op, so recurse to the source (if present - e.g., [] may have no opnd).
+            if (currPnodeSE->nop == knopTempRef)
+            {
+                continue;
+            }
+            else if (currPnodeSE->AsParseNodeUni()->pnode1)
+            {
+                pNodeSEStack.Push(currPnodeSE->AsParseNodeUni()->pnode1);
+            }
+        }
+        else if (fnop & fnopBin)
+        {
+            // currPnodeSE is a binary (or ternary) op, so check sources (if present).
+
+            pNodeSEStack.Push(currPnodeSE->AsParseNodeBin()->pnode1);
+            
+            if (currPnodeSE->AsParseNodeBin()->pnode2)
+            {
+                pNodeSEStack.Push(currPnodeSE->AsParseNodeBin()->pnode2);
+            }
+        }
+        else if (currPnodeSE->nop == knopQmark)
+        {
+            ParseNodeTri * pnodeTriSE = currPnodeSE->AsParseNodeTri();
+
+            pNodeSEStack.Push(pnodeTriSE->pnode1);
+            pNodeSEStack.Push(pnodeTriSE->pnode2);
+            pNodeSEStack.Push(pnodeTriSE->pnode3);
+        }
+        else if (currPnodeSE->nop == knopCall || currPnodeSE->nop == knopNew)
+        {
+            pNodeSEStack.Push(currPnodeSE->AsParseNodeCall()->pnodeTarget);
+
+            if (currPnodeSE->AsParseNodeCall()->pnodeArgs)
+            {
+                pNodeSEStack.Push(currPnodeSE->AsParseNodeCall()->pnodeArgs);
+            }
+        }
+        else if (currPnodeSE->nop == knopList)
+        {
+            return true;
+        }
     }
 
     return false;
@@ -1973,6 +1995,7 @@ void ByteCodeGenerator::LoadAllConstants(FuncInfo *funcInfo)
 
     this->RecordAllIntConstants(funcInfo);
     this->RecordAllStrConstants(funcInfo);
+    this->RecordAllBigIntConstants(funcInfo);
     this->RecordAllStringTemplateCallsiteConstants(funcInfo);
 
     funcInfo->doubleConstantToRegister.Map([byteCodeFunction](double d, Js::RegSlot location)
@@ -3929,7 +3952,7 @@ void ByteCodeGenerator::EnsureFncScopeSlots(ParseNode *pnode, FuncInfo *funcInfo
         case knopFncDecl:
             if (pnode->AsParseNodeFnc()->IsDeclaration())
             {
-                CheckFncDeclScopeSlot(pnode->AsParseNodeFnc(), funcInfo);
+                this->CheckFncDeclScopeSlot(pnode->AsParseNodeFnc(), funcInfo);
             }
             pnode = pnode->AsParseNodeFnc()->pnodeNext;
             break;
@@ -5588,9 +5611,16 @@ void ByteCodeGenerator::EnsureNoRedeclarations(ParseNodeBlock *pnodeBlock, FuncI
         });
     }
 
-    auto emitRedeclCheck = [this](Symbol * sym, FuncInfo * funcInfo)
+    auto emitRedeclCheck = [this](Symbol * sym, FuncInfo * funcInfo, bool isFncDecl = false)
     {
         Js::PropertyId propertyId = sym->EnsurePosition(this);
+
+        // Global function declarations must pass #sec-candeclareglobalfunction
+        // which is enforced by EnsureCanDeclGloFunc
+        if (isFncDecl)
+        {
+            this->m_writer.ElementRootU(Js::OpCode::EnsureCanDeclGloFunc, funcInfo->FindOrAddReferencedPropertyId(propertyId));
+        }
 
         if (this->flags & fscrEval)
         {
@@ -5615,7 +5645,7 @@ void ByteCodeGenerator::EnsureNoRedeclarations(ParseNodeBlock *pnodeBlock, FuncI
         case knopFncDecl:
             if (pnode->AsParseNodeFnc()->IsDeclaration())
             {
-                emitRedeclCheck(pnode->AsParseNodeFnc()->pnodeName->sym, funcInfo);
+                emitRedeclCheck(pnode->AsParseNodeFnc()->pnodeName->sym, funcInfo, true);
             }
 
             pnode = pnode->AsParseNodeFnc()->pnodeNext;
@@ -5683,6 +5713,16 @@ void ByteCodeGenerator::RecordAllStrConstants(FuncInfo * funcInfo)
     funcInfo->stringToRegister.Map([byteCodeFunction](IdentPtr pid, Js::RegSlot location)
     {
         byteCodeFunction->RecordStrConstant(byteCodeFunction->MapRegSlot(location), pid->Psz(), pid->Cch(), pid->IsUsedInLdElem());
+    });
+}
+
+void ByteCodeGenerator::RecordAllBigIntConstants(FuncInfo * funcInfo)
+{
+    Js::FunctionBody *byteCodeFunction = this->TopFuncInfo()->GetParsedFunctionBody();
+    funcInfo->bigintToRegister.Map([byteCodeFunction](ParseNode* pnode, Js::RegSlot location)
+    {
+        IdentPtr pid = pnode->AsParseNodeBigInt()->pid;
+        byteCodeFunction->RecordBigIntConstant(byteCodeFunction->MapRegSlot(location), pid->Psz(), pid->Cch(), pnode->AsParseNodeBigInt()->isNegative);
     });
 }
 
@@ -7752,16 +7792,20 @@ void EmitCallTarget(
             funcInfo->ReleaseLoc(pnodeBinTarget->AsParseNodeSuperReference()->pnodeThis);
             funcInfo->ReleaseLoc(pnodeBinTarget->pnode1);
 
-            // Function calls on the 'super' object should maintain current 'this' pointer
+            // Function calls on the 'super' object should maintain current 'this' pointer.
             *thisLocation = pnodeBinTarget->AsParseNodeSuperReference()->pnodeThis->location;
             *releaseThisLocation = false;
+
+            uint cacheId = funcInfo->FindOrAddInlineCacheId(protoLocation, propertyId, false, false);
+            byteCodeGenerator->Writer()->PatchablePropertyWithThisPtr(Js::OpCode::LdSuperFld,
+                pnodeTarget->location, protoLocation, *thisLocation, cacheId, false);
         }
         else
         {
             *thisLocation = pnodeBinTarget->pnode1->location;
+            EmitMethodFld(pnodeBinTarget, protoLocation, propertyId, byteCodeGenerator, funcInfo);
         }
 
-        EmitMethodFld(pnodeBinTarget, protoLocation, propertyId, byteCodeGenerator, funcInfo);
         break;
     }
 
@@ -9711,7 +9755,7 @@ void EmitJumpCleanup(ParseNodeStmt *pnode, ParseNode *pnodeTarget, ByteCodeGener
 void EmitBinaryOpnds(ParseNode *pnode1, ParseNode *pnode2, ByteCodeGenerator *byteCodeGenerator, FuncInfo *funcInfo)
 {
     // If opnd2 can overwrite opnd1, make sure the value of opnd1 is stashed away.
-    if (MayHaveSideEffectOnNode(pnode1, pnode2))
+    if (MayHaveSideEffectOnNode(pnode1, pnode2, byteCodeGenerator))
     {
         SaveOpndValue(pnode1, funcInfo);
     }
@@ -9735,7 +9779,7 @@ void EmitBinaryReference(ParseNode *pnode1, ParseNode *pnode2, ByteCodeGenerator
     switch (pnode1->nop)
     {
     case knopName:
-        if (fLoadLhs && MayHaveSideEffectOnNode(pnode1, pnode2))
+        if (fLoadLhs && MayHaveSideEffectOnNode(pnode1, pnode2, byteCodeGenerator))
         {
             // Given x op y, y may kill x, so stash x.
             // Note that this only matters if we're loading x prior to the op.
@@ -9748,7 +9792,7 @@ void EmitBinaryReference(ParseNode *pnode1, ParseNode *pnode2, ByteCodeGenerator
             // We're loading the value of the LHS before the RHS, so make sure the LHS gets a register first.
             funcInfo->AcquireLoc(pnode1);
         }
-        if (MayHaveSideEffectOnNode(pnode1->AsParseNodeBin()->pnode1, pnode2))
+        if (MayHaveSideEffectOnNode(pnode1->AsParseNodeBin()->pnode1, pnode2, byteCodeGenerator))
         {
             // Given x.y op z, z may kill x, so stash x away.
             SaveOpndValue(pnode1->AsParseNodeBin()->pnode1, funcInfo);
@@ -9760,13 +9804,13 @@ void EmitBinaryReference(ParseNode *pnode1, ParseNode *pnode2, ByteCodeGenerator
             // We're loading the value of the LHS before the RHS, so make sure the LHS gets a register first.
             funcInfo->AcquireLoc(pnode1);
         }
-        if (MayHaveSideEffectOnNode(pnode1->AsParseNodeBin()->pnode1, pnode2) ||
-            MayHaveSideEffectOnNode(pnode1->AsParseNodeBin()->pnode1, pnode1->AsParseNodeBin()->pnode2))
+        if (MayHaveSideEffectOnNode(pnode1->AsParseNodeBin()->pnode1, pnode2, byteCodeGenerator) ||
+            MayHaveSideEffectOnNode(pnode1->AsParseNodeBin()->pnode1, pnode1->AsParseNodeBin()->pnode2, byteCodeGenerator))
         {
             // Given x[y] op z, y or z may kill x, so stash x away.
             SaveOpndValue(pnode1->AsParseNodeBin()->pnode1, funcInfo);
         }
-        if (MayHaveSideEffectOnNode(pnode1->AsParseNodeBin()->pnode2, pnode2))
+        if (MayHaveSideEffectOnNode(pnode1->AsParseNodeBin()->pnode2, pnode2, byteCodeGenerator))
         {
             // Given x[y] op z, z may kill y, so stash y away.
             // But make sure that x gets a register before y.
@@ -9876,12 +9920,12 @@ bool CollectConcat(ParseNode *pnodeAdd, DListCounted<ParseNode *, ArenaAllocator
 void EmitConcat3(ParseNode *pnode, ParseNode *pnode1, ParseNode *pnode2, ParseNode *pnode3, ByteCodeGenerator *byteCodeGenerator, FuncInfo *funcInfo)
 {
     byteCodeGenerator->StartStatement(pnode);
-    if (MayHaveSideEffectOnNode(pnode1, pnode2) || MayHaveSideEffectOnNode(pnode1, pnode3))
+    if (MayHaveSideEffectOnNode(pnode1, pnode2, byteCodeGenerator) || MayHaveSideEffectOnNode(pnode1, pnode3, byteCodeGenerator))
     {
         SaveOpndValue(pnode1, funcInfo);
     }
 
-    if (MayHaveSideEffectOnNode(pnode2, pnode3))
+    if (MayHaveSideEffectOnNode(pnode2, pnode3, byteCodeGenerator))
     {
         SaveOpndValue(pnode2, funcInfo);
     }
@@ -10304,6 +10348,9 @@ void Emit(ParseNode *pnode, ByteCodeGenerator *byteCodeGenerator, FuncInfo *func
         // TODO: protocol for combining string constants
         break;
         // PTNODE(knopRegExp     , "reg expr"    ,None    ,Pid  ,fnopLeaf|fnopConst)
+    case knopBigInt:
+        // PTNODE(knopBigInt        , "bigint const"    ,None    ,Pid  ,fnopLeaf|fnopConst)
+        break;
     case knopRegExp:
         funcInfo->GetParsedFunctionBody()->SetLiteralRegex(pnode->AsParseNodeRegExp()->regexPatternIndex, pnode->AsParseNodeRegExp()->regexPattern);
         byteCodeGenerator->Writer()->Reg1Unsigned1(Js::OpCode::NewRegEx, funcInfo->AcquireLoc(pnode), pnode->AsParseNodeRegExp()->regexPatternIndex);
@@ -11390,7 +11437,7 @@ void Emit(ParseNode *pnode, ByteCodeGenerator *byteCodeGenerator, FuncInfo *func
         byteCodeGenerator->Writer()->Reg2(Js::OpCode::Conv_Obj, regVal, pnodeWith->pnodeObj->location);
         if (byteCodeGenerator->GetScriptContext()->GetConfig()->IsES6UnscopablesEnabled())
         {
-            byteCodeGenerator->Writer()->Reg2(Js::OpCode::NewWithObject, pnodeWith->location, regVal);
+            byteCodeGenerator->Writer()->Reg2(Js::OpCode::NewUnscopablesWrapperObject, pnodeWith->location, regVal);
         }
         byteCodeGenerator->EndStatement(pnodeWith);
 

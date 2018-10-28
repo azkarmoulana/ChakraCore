@@ -1639,8 +1639,8 @@ namespace Js
       m_tag21(true),
       m_isMethod(false)
 #if DBG
-        ,m_wasEverAsmjsMode(false)
-        ,scopeObjectSize(0)
+      ,m_wasEverAsmjsMode(false)
+      ,scopeObjectSize(0)
 #endif
     {
         this->functionInfo = RecyclerNew(scriptContext->GetRecycler(), FunctionInfo, entryPoint, attributes, functionId, this);
@@ -2119,7 +2119,7 @@ namespace Js
     {
         FunctionTypeWeakRefList* typeList = EnsureFunctionObjectTypeList();
 
-        Assert(functionType != deferredPrototypeType);
+        Assert(functionType != deferredPrototypeType && functionType != undeferredFunctionType);
         Recycler * recycler = this->GetScriptContext()->GetRecycler();
         FunctionTypeWeakRef* weakRef = recycler->CreateWeakReferenceHandle(functionType);
         typeList->SetAtFirstFreeSpot(weakRef);
@@ -3761,10 +3761,12 @@ namespace Js
                 Assert(this->GetOriginalEntryPoint_Unchecked() == (JavascriptMethod)&Js::InterpreterStackFrame::StaticInterpreterAsmThunk);
             }
             else
-#endif
             {
                 Assert(this->GetOriginalEntryPoint_Unchecked() == (JavascriptMethod)&Js::InterpreterStackFrame::StaticInterpreterThunk);
             }
+#else
+            Assert(this->GetOriginalEntryPoint_Unchecked() == (JavascriptMethod)&Js::InterpreterStackFrame::StaticInterpreterThunk);
+#endif
         }
 #endif
     }
@@ -4347,6 +4349,13 @@ namespace Js
             str = scriptContext->GetPropertyString(propertyRecord->GetPropertyId());
         }
         this->RecordConstant(location, str);
+    }
+
+    void FunctionBody::RecordBigIntConstant(RegSlot location, LPCOLESTR psz, uint32 cch, bool isNegative)
+    {
+        ScriptContext *scriptContext = this->GetScriptContext();
+        Var bigintConst = JavascriptBigInt::Create(psz, cch, isNegative, scriptContext);
+        this->RecordConstant(location, bigintConst);
     }
 
     void FunctionBody::RecordFloatConstant(RegSlot location, double d)
@@ -5096,7 +5105,7 @@ namespace Js
                 NEXT_SLISTBASE_ENTRY_EDITING;
             }
 #endif
-            this->dynamicProfileInfo = nullptr;
+        this->dynamicProfileInfo = nullptr;
         }
 #endif
         this->hasExecutionDynamicProfileInfo = false;
@@ -5562,7 +5571,7 @@ namespace Js
 
     ScopeType FrameDisplay::GetScopeType(void* scope)
     {
-        if(Js::ActivationObject::Is(scope))
+        if(Js::VarIs<Js::ActivationObject>(scope))
         {
             return ScopeType_ActivationObject;
         }
@@ -5574,7 +5583,7 @@ namespace Js
     }
 
     // ScopeSlots
-    bool ScopeSlots::IsDebuggerScopeSlotArray() 
+    bool ScopeSlots::IsDebuggerScopeSlotArray()
     {
         return DebuggerScope::Is(slotArray[ScopeMetadataSlotIndex]);
     }
@@ -8217,7 +8226,7 @@ namespace Js
     void EntryPointInfo::OnNativeCodeInstallFailure()
     {
         // If more data is transferred from the background thread to the main thread in ProcessJitTransferData,
-        // corresponding fields on the entryPointInfo should be rolled back here.        
+        // corresponding fields on the entryPointInfo should be rolled back here.
         this->nativeEntryPointData->ClearTypeRefsAndGuards(GetScriptContext());
         this->ResetOnNativeCodeInstallFailure();
     }
@@ -8233,7 +8242,7 @@ namespace Js
     }
 #endif
 
-   
+
     void EntryPointInfo::PinTypeRefs(ScriptContext* scriptContext)
     {
         NativeEntryPointData * nativeEntryPointData = this->GetNativeEntryPointData();
@@ -8324,7 +8333,7 @@ namespace Js
         if (jitTransferData->equivalentTypeGuardOffsets)
         {
             // InstallGuards
-            int guardCount = jitTransferData->equivalentTypeGuardOffsets->count;            
+            int guardCount = jitTransferData->equivalentTypeGuardOffsets->count;
             EquivalentTypeCache* cache = this->nativeEntryPointData->EnsureEquivalentTypeCache(guardCount, scriptContext, this);
             char * nativeDataBuffer = this->GetOOPNativeEntryPointData()->GetNativeDataBuffer();
             for (int i = 0; i < guardCount; i++)
@@ -8833,7 +8842,7 @@ namespace Js
             this->OnCleanup(isShutdown);
 
             if (this->nativeEntryPointData)
-            {                
+            {
                 this->nativeEntryPointData->Cleanup(GetScriptContext(), isShutdown, false);
                 this->nativeEntryPointData = nullptr;
             }
@@ -8913,7 +8922,7 @@ namespace Js
     void EntryPointInfo::SetTJCodeSize(ptrdiff_t size)
     {
         Assert(isAsmJsFunction);
-        // TODO: We don't need the whole NativeEntryPointData to just hold just the code and size for TJ mode 
+        // TODO: We don't need the whole NativeEntryPointData to just hold just the code and size for TJ mode
         this->EnsureNativeEntryPointData()->SetTJCodeSize(size);
     }
 

@@ -725,7 +725,9 @@ public:
     StackSym *          tempSymDouble;
     StackSym *          tempSymBool;
     uint32              loopCount;
+    uint32              unoptimizableArgumentsObjReference;
     Js::ProfileId       callSiteIdInParentFunc;
+    InlineeFrameInfo*   cachedInlineeFrameInfo;
     bool                m_hasCalls: 1; // This is more accurate compared to m_isLeaf
     bool                m_hasInlineArgsOpt : 1;
     bool                m_doFastPaths : 1;
@@ -752,6 +754,15 @@ public:
     bool                isPostPeeps:1;
     bool                isPostLayout:1;
     bool                isPostFinalLower:1;
+
+    struct InstrByteCodeRegisterUses
+    {
+        Js::OpCode capturingOpCode;
+        BVSparse<JitArenaAllocator>* bv;
+    };
+    typedef JsUtil::BaseDictionary<uint32, InstrByteCodeRegisterUses, JitArenaAllocator> ByteCodeRegisterUses;
+    ByteCodeRegisterUses* byteCodeRegisterUses = nullptr;
+    BVSparse<JitArenaAllocator>* GetByteCodeOffsetUses(uint offset) const;
 
     typedef JsUtil::Stack<Js::Phase> CurrentPhasesStack;
     CurrentPhasesStack  currentPhases;

@@ -1088,8 +1088,10 @@ namespace Js
             {
                 func(this->deferredPrototypeType);
             }
-            // NOTE: We deliberately do not map the undeferredFunctionType here, since it's in the list
-            // of registered function object types we processed above.
+            if (this->undeferredFunctionType)
+            {
+                func(this->undeferredFunctionType);
+            }
         }
 
         static uint GetOffsetOfDeferredPrototypeType() { return static_cast<uint>(offsetof(Js::FunctionProxy, deferredPrototypeType)); }
@@ -2966,6 +2968,7 @@ namespace Js
         void RecordFalseObject(RegSlot location);
         void RecordIntConstant(RegSlot location, unsigned int val);
         void RecordStrConstant(RegSlot location, LPCOLESTR psz, uint32 cch, bool forcePropertyString);
+        void RecordBigIntConstant(RegSlot location, LPCOLESTR psz, uint32 cch, bool isNegative);
         void RecordFloatConstant(RegSlot location, double d);
         void RecordNullDisplayConstant(RegSlot location);
         void RecordStrictNullDisplayConstant(RegSlot location);
